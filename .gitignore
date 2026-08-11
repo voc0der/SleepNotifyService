@@ -1,0 +1,52 @@
+# Build output
+bin/
+obj/
+publish/
+artifacts/
+*.binlog
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+# Compiled binaries
+*.dll
+*.exe
+*.pdb
+*.so
+*.dylib
+*.zip
+*.nupkg
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+# NuGet
+*.nuget.props
+*.nuget.targets
+packages/
+project.lock.json
+project.assets.json
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets - never commit real Apprise values
+*.local.json
+.env
+.env.*
+secrets.*

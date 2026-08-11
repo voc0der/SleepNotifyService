@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT: src/SleepNotifyService.csproj
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reject committed build output
+        run: |
+          matches="$(git ls-files | grep -E '(^|/)(bin|obj|publish)/|\.(exe|dll|pdb)$' || true)"
+          if [ -n "$matches" ]; then
+            echo "::error::Build output must not be committed:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "No build output tracked in git."
+
+      - name: Reject hardcoded Apprise endpoints
+        run: |
+          # Endpoints are supplied at install time. RFC 2606 example domains are documentation.
+          hits="$(grep -rInE 'https?://[^"[:space:]]*/notify/apprise' \
+                    --include='*.cs' --include='*.csproj' . \
+                  | grep -vE '://([A-Za-z0-9-]+\.)*example\.(com|org|net)/' || true)"
+          if [ -n "$hits" ]; then
+            echo "::error::A literal Apprise endpoint is present in the source tree:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "No hardcoded Apprise endpoints found."
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore "$PROJECT"
+
+      - name: Build
+        run: dotnet build "$PROJECT" -c Release --no-restore -warnaserror
+
+      - name: Publish (smoke test)
+        run: |
+          dotnet publish "$PROJECT" \
+            -c Release \
+            -r win-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:DebugType=embedded \
+            -o ./artifacts/ci
+
+      - name: Confirm artifact exists
+        run: |
+          test -f ./artifacts/ci/SleepNotifyService.exe
+          ls -lh ./artifacts/ci/SleepNotifyService.exe

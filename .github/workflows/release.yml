@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Semantic version to build and release, e.g. 1.4.0 or 1.4.0-rc.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PROJECT: src/SleepNotifyService.csproj
+  RUNTIME: win-x64
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          # Strict semver: MAJOR.MINOR.PATCH with optional prerelease and build metadata.
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if ! printf '%s' "$version" | grep -Eq "$semver"; then
+            echo "::error::'$version' is not a valid semantic version (expected MAJOR.MINOR.PATCH[-prerelease])."
+            exit 1
+          fi
+
+          # Assembly/file version fields accept numerics only, so strip any prerelease suffix.
+          numeric="$(printf '%s' "$version" | sed -E 's/[-+].*$//')"
+
+          # A hyphen in the version core (ignoring +build metadata) means prerelease.
+          case "${version%%+*}" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "numeric=$numeric"
+            echo "prerelease=$prerelease"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Releasing version $version (prerelease=$prerelease)"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore "$PROJECT" -r "$RUNTIME"
+
+      - name: Publish
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          NUMERIC: ${{ steps.version.outputs.numeric }}
+        run: |
+          dotnet publish "$PROJECT" \
+            -c Release \
+            -r "$RUNTIME" \
+            --self-contained true \
+            --no-restore \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:DebugType=embedded \
+            -p:Version="$VERSION" \
+            -p:AssemblyVersion="$NUMERIC.0" \
+            -p:FileVersion="$NUMERIC.0" \
+            -p:InformationalVersion="$VERSION" \
+            -o ./artifacts/publish
+
+      - name: Package
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          test -f ./artifacts/publish/SleepNotifyService.exe
+
+          mkdir -p ./artifacts/release
+          name="SleepNotifyService-v${VERSION}-${RUNTIME}"
+
+          cp ./artifacts/publish/SleepNotifyService.exe "./artifacts/release/SleepNotifyService.exe"
+          cp LICENSE README.md ./artifacts/release/
+
+          (cd ./artifacts/release && zip -r "../${name}.zip" .)
+          (cd ./artifacts && sha256sum "${name}.zip" > "${name}.zip.sha256")
+
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          ls -lh ./artifacts
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          NAME: ${{ steps.package.outputs.name }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=(--generate-notes --title "$TAG")
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; uploading assets with --clobber."
+            gh release upload "$TAG" \
+              "./artifacts/${NAME}.zip" \
+              "./artifacts/${NAME}.zip.sha256" \
+              --clobber
+          else
+            gh release create "$TAG" \
+              "./artifacts/${NAME}.zip" \
+              "./artifacts/${NAME}.zip.sha256" \
+              "${flags[@]}"
+          fi
