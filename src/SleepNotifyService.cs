@@ -6,6 +6,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -199,19 +200,18 @@ public class SleepNotifyService : ServiceBase
         using var cts = new System.Threading.CancellationTokenSource();
         if (totalMs.HasValue) cts.CancelAfter(totalMs.Value);
 
-        using var form = new MultipartFormDataContent();
-        var bodyPart = new StringContent(body, Encoding.UTF8, "text/plain");
-        bodyPart.Headers.ContentType = new MediaTypeHeaderValue("text/plain") { CharSet = "utf-8" };
-        form.Add(bodyPart, "body");
-
-        if (!string.IsNullOrEmpty(_config.Tag))
+        var payload = new Dictionary<string, string>
         {
-            var tagPart = new StringContent(_config.Tag, Encoding.UTF8, "text/plain");
-            tagPart.Headers.ContentType = new MediaTypeHeaderValue("text/plain") { CharSet = "utf-8" };
-            form.Add(tagPart, "tag");
-        }
+            ["body"]   = body,
+            ["format"] = "markdown"
+        };
+        if (!string.IsNullOrEmpty(_config.Tag)) payload["tag"] = _config.Tag;
 
-        var sendTask = Http.PostAsync(_config.Url, form, cts.Token);
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8);
+        // Bare "application/json": StringContent would otherwise append "; charset=utf-8".
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var sendTask = Http.PostAsync(_config.Url, content, cts.Token);
 
         if (connectMs.HasValue)
         {
